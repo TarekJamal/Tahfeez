@@ -4,11 +4,12 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useQuran } from '../lib/useQuran';
 import { useLocalStorage, ar, RECITERS, INTERVALS, addDays, isDue } from '../lib/store';
 import Review from '../components/Review';
+import Listen from '../components/Listen';
 import MemorizationEngine from '../components/MemorizationEngine';
 import Dashboard from '../components/Dashboard';
 import { HideSeek, LinkNotes } from '../components/Extras';
 
-const NAV = [['engine', '🎧', 'محرك الحفظ'], ['hide', '🙈', 'الغميضة'], ['notes', '🔗', 'طريقة الربط'], ['review', '🧠', 'المراجعة'], ['dash', '📊', 'تقدّمي']];
+const NAV = [['engine', '🎧', 'محرك الحفظ'], ['listen', '🎵', 'استماع مستمر'], ['listen', '🎵', 'استماع وراديو'], ['hide', '🙈', 'الغميضة'], ['notes', '🔗', 'طريقة الربط'], ['review', '🧠', 'المراجعة'], ['dash', '📊', 'تقدّمي']];
 
 export default function App() {
   const { quran, status } = useQuran();
@@ -101,13 +102,14 @@ export default function App() {
 
       <main className="mx-auto w-full max-w-4xl flex-1 p-4 pb-16 md:p-8">
         <h2 className="mb-5 font-quran text-3xl print:hidden">
-          {view === 'dash' ? 'لوحة التقدّم' : view === 'review' ? 'مراجعة اليوم' : `سورة ${surah.name}`}
+          {view === 'dash' ? 'لوحة التقدّم' : view === 'review' ? 'مراجعة اليوم' : view === 'listen' ? 'الاستماع المتصل' : `سورة ${surah.name}`}
         </h2>
         <AnimatePresence mode="wait">
           <motion.div key={view} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
             {view === 'engine' && engine(false)}
             {view === 'hide' && <HideSeek ayahs={ayahs} />}
             {view === 'notes' && <LinkNotes surah={surah} ayahs={ayahs} notes={data.notes} setNote={setNote} />}
+            {view === 'listen' && <Listen quran={quran} surahId={surahId} range={range} reciter={reciter} />}
             {view === 'review' && <Review quran={quran} data={data} reciter={reciter} grade={grade} />}
             {view === 'dash' && <Dashboard data={data} quran={quran} full={status === 'full'} />}
           </motion.div>
