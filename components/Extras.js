@@ -28,6 +28,8 @@ export function HideSeek({ ayahs }) {
         <label className="flex items-center gap-2">نسبة الإخفاء {ar(level)}٪
           <input type="range" min="20" max="90" step="10" value={level} onChange={(e) => setLevel(+e.target.value)} /></label>
         <button className="btn-gold" onClick={shuffle}>🎲 إخفاء جديد</button>
+        <button className="btn-ghost" disabled={idx <= 0} onClick={() => setIdx(idx - 1)}>⏮ السابقة</button>
+        <button className="btn-main" disabled={idx >= ayahs.length - 1} onClick={() => setIdx(idx + 1)}>التالية ⏭</button>
       </div>
       <div className="card p-6 text-center md:p-12">
         <p className="font-quran text-3xl leading-[2.6] md:text-5xl">

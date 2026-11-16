@@ -16,12 +16,14 @@ export default function MemorizationEngine({ surah, ayahs, repeats, memorized, o
   const [err, setErr] = useState('');
   const recRef = useRef(null);
   const chunks = useRef([]);
+  const auto = useRef(false);
+  const cancelled = useRef(false);
 
   const ayah = ayahs[i] || ayahs[0];
   const key = `${surah.id}:${ayah.n}`;
 
   const reset = () => {
-    if (recRef.current?.state === 'recording') recRef.current.stop();
+    if (recRef.current?.state === 'recording') { cancelled.current = true; recRef.current.stop(); }
     setI(0); setPhase('idle'); setPlaying(false); setUserUrl(null); setErr('');
   };
   useEffect(reset, [surah.id, ayahs[0]?.n, ayahs.length]);
@@ -30,7 +32,15 @@ export default function MemorizationEngine({ surah, ayahs, repeats, memorized, o
     setUserUrl(null); setErr(''); setRep(1); setPhase('listen');
     setToken((t) => t + 1); setPlaying(true);
   };
-  useEffect(() => { if (i > 0) start(); }, [i]);
+  useEffect(() => { if (auto.current) { auto.current = false; start(); } }, [i]);
+
+  // انتقال يدوي بين الآيات دون اعتبارها محفوظة
+  const jump = (d) => {
+    const ni = Math.min(Math.max(i + d, 0), ayahs.length - 1);
+    if (ni === i) return;
+    if (recRef.current?.state === 'recording') { cancelled.current = true; recRef.current.stop(); }
+    setPlaying(false); setPhase('idle'); setUserUrl(null); setErr(''); setI(ni);
+  };
 
   const startRec = async () => {
     try {
@@ -40,6 +50,7 @@ export default function MemorizationEngine({ surah, ayahs, repeats, memorized, o
       mr.ondataavailable = (e) => chunks.current.push(e.data);
       mr.onstop = () => {
         stream.getTracks().forEach((t) => t.stop());
+        if (cancelled.current) { cancelled.current = false; return; }
         const url = URL.createObjectURL(new Blob(chunks.current, { type: mr.mimeType }));
         setUserUrl(url); setPhase('review');
         new Audio(url).play().catch(() => {}); // يعيد تشغيل تسجيلك تلقائياً
@@ -58,7 +69,7 @@ export default function MemorizationEngine({ surah, ayahs, repeats, memorized, o
   };
 
   const next = () => (i < ayahs.length - 1 ? setI(i + 1) : (setPhase('idle'), setI(0)));
-  const done = () => { onMemorized(ayah.n); next(); };
+  const done = () => { onMemorized(ayah.n); auto.current = i < ayahs.length - 1; next(); };
 
   return (
     <div className="space-y-4">
@@ -84,6 +95,11 @@ export default function MemorizationEngine({ surah, ayahs, repeats, memorized, o
             </motion.p>
           )}
         </AnimatePresence>
+      </div>
+
+      <div className="flex justify-between gap-2">
+        <button className="btn-ghost" disabled={i === 0} onClick={() => jump(-1)}>⏮ الآية السابقة</button>
+        <button className="btn-main" disabled={i >= ayahs.length - 1} onClick={() => jump(1)}>الآية التالية ⏭</button>
       </div>
 
       {err && <p className="rounded-xl bg-red-500/10 p-3 text-sm text-red-500">{err}</p>}
