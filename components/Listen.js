@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { audioUrl, ar, RECITERS, useLocalStorage } from '../lib/store';
 
+const BISM = 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ';
 export const RADIO_DEFAULT = 'https://stream.radiojar.com/8s5u5tpdtwzuv'; // إذاعة القرآن الكريم من القاهرة (قابل للتعديل من الواجهة)
 
 export default function Listen({ quran, surahId, range, reciter }) {
@@ -34,7 +35,9 @@ function Continuous({ quran, surahId, range, reciter, active, setActive }) {
       if (s.id < surahId || (s.id > surahId && !follow)) return;
       s.ayahs.forEach((a) => {
         if (s.id === surahId && (a.n < range[0] || (!follow && a.n > range[1]))) return;
-        out.push({ sid: s.id, n: a.n, name: s.name, text: a.text });
+        // البسملة قبل أول آية في كل سورة (عدا الفاتحة والتوبة): صوتها هو الآية 1 من الفاتحة بصوت القارئ نفسه
+        if (a.n === 1 && s.id !== 1 && s.id !== 9) out.push({ sid: 1, n: 1, ss: s.id, name: s.name, text: BISM, bism: true });
+        out.push({ sid: s.id, n: a.n, ss: s.id, name: s.name, text: a.text });
       });
     });
     return out;
@@ -69,7 +72,7 @@ function Continuous({ quran, surahId, range, reciter, active, setActive }) {
     if (!('mediaSession' in navigator)) return;
     const ms = navigator.mediaSession;
     ms.metadata = new MediaMetadata({
-      title: `سورة ${cur.name} — الآية ${ar(cur.n)}`,
+      title: `سورة ${cur.name} — ${cur.bism ? 'البسملة' : `الآية ${ar(cur.n)}`}`,
       artist: RECITERS.find((r) => r[0] === reciter)?.[1] || '', album: 'حِفظ',
     });
     ms.setActionHandler('play', () => setPlaying(true));
@@ -88,8 +91,8 @@ function Continuous({ quran, surahId, range, reciter, active, setActive }) {
     <div className="space-y-4">
       <audio ref={ref} src={src} preload="auto" onEnded={ended} />
       <div className="card p-6 text-center md:p-10">
-        <p className="mb-2 text-sm opacity-70">سورة {cur.name} — الآية {ar(cur.n)} ({ar(idx + 1)} من {ar(list.length)})</p>
-        <p className="font-quran text-3xl leading-[2.2] md:text-5xl">{cur.text} <span className="text-gold">﴿{ar(cur.n)}﴾</span></p>
+        <p className="mb-2 text-sm opacity-70">سورة {cur.name} — {cur.bism ? 'البسملة' : `الآية ${ar(cur.n)}`} ({ar(idx + 1)} من {ar(list.length)})</p>
+        <p className="font-quran text-3xl leading-[2.2] md:text-5xl">{cur.text} {!cur.bism && <span className="text-gold">﴿{ar(cur.n)}﴾</span>}</p>
       </div>
 
       <div className="card flex flex-wrap items-center justify-between gap-3 p-4">
@@ -108,10 +111,10 @@ function Continuous({ quran, surahId, range, reciter, active, setActive }) {
       </div>
 
       <div className="card max-h-72 space-y-1 overflow-auto p-3">
-        {list.map((it, k) => it.sid === cur.sid && (
+        {list.map((it, k) => it.ss === cur.ss && (
           <button key={k} id={`ay-${k}`} onClick={() => { setIdx(k); setPlaying(true); }}
             className={`block w-full rounded-xl px-3 py-2 text-right font-quran text-xl transition ${k === idx ? 'bg-gold/20 text-gold' : 'hover:bg-emerald-500/10'}`}>
-            <span className="ml-2 text-sm opacity-60">{ar(it.n)}</span>{it.text}
+            <span className="ml-2 text-sm opacity-60">{it.bism ? 'بسملة' : ar(it.n)}</span>{it.text}
           </button>
         ))}
       </div>
@@ -119,13 +122,21 @@ function Continuous({ quran, surahId, range, reciter, active, setActive }) {
   );
 }
 
+const STATIONS = [
+  { id: 'cairo', name: 'إذاعة القرآن الكريم من القاهرة', note: 'بث مباشر على مدار الساعة', url: RADIO_DEFAULT },
+];
+
 function Radio({ active, setActive }) {
-  const [url, setUrl] = useLocalStorage('hifz-radio', RADIO_DEFAULT);
+  const [urls, setUrls] = useLocalStorage('hifz-radios', {});
+  const [sel, setSel] = useState('cairo');
   const [on, setOn] = useState(false);
   const [err, setErr] = useState('');
   const ref = useRef(null);
+  const st = STATIONS.find((s) => s.id === sel);
+  const url = (urls[sel] ?? st.url).trim();
 
   const stop = () => { const a = ref.current; a.pause(); a.removeAttribute('src'); a.load(); setOn(false); };
+  const pick = (id) => { if (on) stop(); setErr(''); setSel(id); };
   const toggle = () => {
     if (on) return stop();
     setErr(''); const a = ref.current; a.src = url;
@@ -134,18 +145,24 @@ function Radio({ active, setActive }) {
   useEffect(() => { if (active !== 'radio' && on) stop(); }, [active]);
 
   return (
-    <div className="card space-y-4 p-6 text-center md:p-10">
+    <div className="card space-y-4 p-5 text-center md:p-10">
       <audio ref={ref} preload="none" onError={() => { if (ref.current?.getAttribute('src')) { setErr('انقطع البث أو الرابط غير صالح.'); setOn(false); } }} />
+      <div className="flex justify-center gap-2" hidden={STATIONS.length < 2}>
+        {STATIONS.map((s) => (
+          <button key={s.id} className={sel === s.id ? 'btn-main' : 'btn-ghost'} onClick={() => pick(s.id)}>{s.name}</button>
+        ))}
+      </div>
       <div className="text-6xl">📻</div>
-      <h3 className="text-2xl font-bold">إذاعة القرآن الكريم من القاهرة</h3>
-      <p className="text-sm opacity-70">بث مباشر على مدار الساعة</p>
-      <button className="btn-gold px-8 py-3 text-lg" onClick={toggle}>{on ? '⏹ إيقاف البث' : '▶ تشغيل الإذاعة'}</button>
+      <h3 className="text-2xl font-bold">{st.name}</h3>
+      <p className="text-sm leading-7 opacity-70">{st.note}</p>
+      <button className="btn-gold px-8 py-3 text-lg" disabled={!url} onClick={toggle}>{on ? '⏹ إيقاف البث' : '▶ تشغيل'}</button>
       {err && <p className="rounded-xl bg-red-500/10 p-3 text-sm text-red-500">{err}</p>}
-      <details className="text-right text-sm">
-        <summary className="cursor-pointer opacity-70">رابط البث (إن لم يعمل غيّره)</summary>
+      <details className="text-right text-sm" open={!url}>
+        <summary className="cursor-pointer opacity-70">رابط البث</summary>
         <div className="mt-2 flex gap-2">
-          <input dir="ltr" value={url} onChange={(e) => setUrl(e.target.value)} className="flex-1 rounded-xl border border-emerald-900/20 bg-transparent p-2" />
-          <button className="btn-ghost" onClick={() => setUrl(RADIO_DEFAULT)}>الافتراضي</button>
+          <input dir="ltr" placeholder="https://..." value={urls[sel] ?? st.url} onChange={(e) => setUrls({ ...urls, [sel]: e.target.value })}
+            className="min-w-0 flex-1 rounded-xl border border-emerald-900/20 bg-transparent p-2" />
+          <button className="btn-ghost" onClick={() => setUrls({ ...urls, [sel]: st.url })}>الافتراضي</button>
         </div>
       </details>
     </div>
