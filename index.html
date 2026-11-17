@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>عيني - وصف صوتي</title>
+<style>
+  /* تصميم عالي التباين: خلفية سوداء وأزرار صفراء كبيرة */
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: #000; color: #fff; font-family: system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  video { width: 100%; max-height: 35vh; object-fit: cover; background: #111; }
+  #status { padding: 12px; font-size: 1.3rem; text-align: center; min-height: 4.5rem; }
+  button { border: 0; font-weight: bold; cursor: pointer; }
+  #start { margin: auto; padding: 40px 60px; font-size: 2rem; background: #ffd400; color: #000; border-radius: 20px; }
+  /* الزر الكبير يأخذ معظم الشاشة ليسهل الضغط عليه دون رؤية */
+  #describe { flex: 1; margin: 8px; font-size: 2.6rem; background: #ffd400; color: #000; border-radius: 24px; }
+  #repeat { margin: 0 8px 8px; padding: 22px; font-size: 1.6rem; background: #333; color: #fff; border-radius: 16px; }
+  button:disabled { opacity: .5; }
+  button:focus-visible { outline: 6px solid #00e5ff; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+  <video id="video" playsinline muted aria-hidden="true"></video>
+  <!-- aria-live: قارئ الشاشة ينطق أي تغيير في هذا العنصر تلقائياً -->
+  <div id="status" role="status" aria-live="polite">اضغط "ابدأ" لتشغيل التطبيق</div>
+  <button id="start">ابدأ</button>
+  <button id="describe" hidden disabled aria-label="صِف ما أمامي">صِف ما أمامي</button>
+  <button id="repeat" hidden aria-label="أعد آخر وصف">أعد آخر وصف</button>
+  <canvas id="canvas" hidden></canvas>
+
+<script type="module">
+// مكتبة Transformers.js تشغّل النماذج داخل المتصفح (مجانية بالكامل)
+import { Florence2ForConditionalGeneration, AutoProcessor, AutoTokenizer, RawImage, pipeline }
+  from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1';
+
+const $ = id => document.getElementById(id);
+const video = $('video'), statusEl = $('status'), canvas = $('canvas');
+const startBtn = $('start'), describeBtn = $('describe'), repeatBtn = $('repeat');
+
+const MODEL_ID = 'onnx-community/Florence-2-base-ft'; // نموذج وصف الصور
+const TASK = '<DETAILED_CAPTION>';                     // للأسرع استخدم '<CAPTION>'
+let model, processor, tokenizer, translator, busy = false, lastText = '';
+
+/* ---------- النطق بالعربية ---------- */
+let arVoice = null;
+function pickVoice() {
+  const v = speechSynthesis.getVoices();
+  arVoice = v.find(x => x.lang.replace('_', '-') === 'ar-EG')
+         || v.find(x => x.lang.replace('_', '-') === 'ar-SA')
+         || v.find(x => x.lang.toLowerCase().startsWith('ar')) || null;
+}
+speechSynthesis.onvoiceschanged = pickVoice; pickVoice();
+
+function speak(text) {
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = arVoice ? arVoice.lang : 'ar-SA';
+  if (arVoice) u.voice = arVoice;
+  u.rate = 0.95;
+  speechSynthesis.speak(u);
+}
+// عرض النص + نطقه
+function say(text) { statusEl.textContent = text; speak(text); lastText = text; }
+
+/* ---------- تحميل نموذج مع محاولات احتياطية ---------- */
+async function loadModel() {
+  const onProgress = p => {
+    if (p.status === 'progress') statusEl.textContent = `جارٍ التحميل ${Math.round(p.progress)}%`;
+  };
+  // الترتيب: WebGPU (الأسرع) ثم نسخة مضغوطة ثم الكاملة
+  const configs = [];
+  if (navigator.gpu) configs.push({ device: 'webgpu',
+    dtype: { embed_tokens: 'fp16', vision_encoder: 'fp16', encoder_model: 'q4', decoder_model_merged: 'q4' } });
+  configs.push({ dtype: 'q8' }, { dtype: 'fp32' });
+  for (const cfg of configs) {
+    try {
+      return await Florence2ForConditionalGeneration.from_pretrained(MODEL_ID, { ...cfg, progress_callback: onProgress });
+    } catch (e) { console.warn('فشلت الإعدادات', cfg, e); }
+  }
+  throw new Error('تعذر تحميل النموذج');
+}
+
+/* ---------- البدء ---------- */
+startBtn.onclick = async () => {
+  startBtn.hidden = true;
+  try {
+    say('جارٍ تشغيل الكاميرا');
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } }, audio: false }); // الكاميرا الخلفية
+    video.srcObject = stream; await video.play();
+
+    say('جارٍ تحميل النموذج. في المرة الأولى قد يستغرق عدة دقائق، يرجى الانتظار');
+    model = await loadModel();
+    processor = await AutoProcessor.from_pretrained(MODEL_ID);
+    tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID);
+
+    // مترجم محلي من الإنجليزية إلى العربية (اختياري: لو فشل نكمل بالإنجليزية)
+    try { translator = await pipeline('translation', 'Xenova/opus-mt-en-ar'); }
+    catch (e) { console.warn('لا يوجد مترجم', e); }
+
+    describeBtn.hidden = repeatBtn.hidden = false; describeBtn.disabled = false;
+    say('التطبيق جاهز. اضغط الزر الكبير لوصف ما أمامك');
+  } catch (e) {
+    console.error(e);
+    say('حدث خطأ. تأكد من السماح بالكاميرا وأعد تحميل الصفحة');
+  }
+};
+
+/* ---------- التقاط الصورة ووصفها ---------- */
+describeBtn.onclick = async () => {
+  if (busy) return;
+  busy = true; describeBtn.disabled = true;
+  try {
+    speak('جارٍ التحليل');
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.8));
+    const image = await RawImage.fromBlob(blob);
+
+    // تشغيل Florence-2
+    const vision = await processor(image);
+    const text_inputs = tokenizer(processor.construct_prompts(TASK));
+    const ids = await model.generate({ ...text_inputs, ...vision, max_new_tokens: 100 });
+    const decoded = tokenizer.batch_decode(ids, { skip_special_tokens: false })[0];
+    const english = processor.post_process_generation(decoded, TASK, image.size)[TASK];
+
+    // الترجمة إلى العربية
+    let arabic = english;
+    if (translator) arabic = (await translator(english, { max_new_tokens: 200 }))[0].translation_text;
+    say(arabic);
+    console.log('EN:', english, '| AR:', arabic);
+  } catch (e) {
+    console.error(e); say('حدث خطأ، حاول مرة أخرى');
+  } finally { busy = false; describeBtn.disabled = false; }
+};
+
+repeatBtn.onclick = () => lastText && speak(lastText);
+</script>
+</body>
+</html>
