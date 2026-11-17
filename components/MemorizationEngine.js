@@ -6,6 +6,16 @@ import { audioUrl, ar } from '../lib/store';
 import { compare } from '../lib/compare';
 
 // المراحل: idle → listen (تكرار X مرات) → record (النص مخفي) → review (مقارنة + فحص آلي للكلمات)
+const sttMsg = (c) => ({
+  'not-allowed': 'المتصفح منع خدمة التعرف على الكلام. اسمح بالميكروفون واستخدم كروم أو إيدج (متصفح برايف يمنعها).',
+  'service-not-allowed': 'المتصفح منع خدمة التعرف على الكلام. اسمح بالميكروفون واستخدم كروم أو إيدج (متصفح برايف يمنعها).',
+  'audio-capture': 'تعذّر استخدام الميكروفون للتعرف على الكلام (قد يكون مشغولاً بالتسجيل). فعّل «فحص بدون تسجيل صوتي» أدناه.',
+  network: 'خدمة التعرف على الكلام تحتاج اتصالاً بالإنترنت، وتعذّر الوصول إليها (أو أن المتصفح يحجبها).',
+  'language-not-supported': 'المتصفح لا يدعم التعرف على اللغة العربية.',
+}[c] || `تعذّر التعرف على الكلام (${c}).`);
+
+const LANGS = ['ar-SA', 'ar-EG', 'ar'];
+
 export default function MemorizationEngine({ surah, ayahs, repeats, memorized, onMemorized, focus, reciter }) {
   const [i, setI] = useState(0);
   const [phase, setPhase] = useState('idle');
@@ -25,6 +35,11 @@ export default function MemorizationEngine({ surah, ayahs, repeats, memorized, o
   const auto = useRef(false);
   const cancelled = useRef(false);
   const sess = useRef(0);
+  const wantSR = useRef(false);
+  const finalRef = useRef('');
+  const [live, setLive] = useState('');
+  const [sttErr, setSttErr] = useState('');
+  const [sttOnly, setSttOnly] = useState(false);
 
   useEffect(() => { setSrOk(!!(window.SpeechRecognition || window.webkitSpeechRecognition)); }, []);
 
@@ -36,8 +51,9 @@ export default function MemorizationEngine({ surah, ayahs, repeats, memorized, o
   const cancelRec = () => {
     sess.current += 1;
     if (recRef.current?.state === 'recording') { cancelled.current = true; recRef.current.stop(); }
+    wantSR.current = false;
     try { recog.current?.abort(); } catch {}
-    recog.current = null; setHeard(null); setChecking(false);
+    recog.current = null; setHeard(null); setChecking(false); setLive(''); setSttErr('');
   };
   const reset = () => { cancelRec(); setI(0); setPhase('idle'); setPlaying(false); setUserUrl(null); setErr(''); };
   useEffect(reset, [surah.id, ayahs[0]?.n, ayahs.length]);
@@ -56,7 +72,57 @@ export default function MemorizationEngine({ surah, ayahs, repeats, memorized, o
     cancelRec(); setPlaying(false); setPhase('idle'); setUserUrl(null); setErr(''); setI(ni);
   };
 
+  // تفريغ التلاوة إلى نص (Web Speech API) مع إعادة التشغيل التلقائي عند الصمت وتجربة لهجات عربية بديلة
+  const startSR = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    heardRef.current = ''; finalRef.current = ''; recog.current = null; setLive(''); setSttErr('');
+    if (!SR) return;
+    let li = 0; wantSR.current = true;
+    const make = () => {
+      const rec = new SR(); let interim = '';
+      rec.lang = LANGS[li]; rec.continuous = true; rec.interimResults = true;
+      rec.onresult = (e) => {
+        interim = '';
+        for (let k = e.resultIndex; k < e.results.length; k++) {
+          const r = e.results[k];
+          if (r.isFinal) finalRef.current += ' ' + r[0].transcript; else interim += ' ' + r[0].transcript;
+        }
+        heardRef.current = (finalRef.current + ' ' + interim).trim();
+        setLive(heardRef.current);
+      };
+      rec.onerror = (e) => {
+        if (e.error === 'no-speech' || e.error === 'aborted') return;
+        if (e.error === 'language-not-supported' && li < LANGS.length - 1) { li++; return; }
+        setSttErr(e.error); wantSR.current = false;
+      };
+      rec.onend = () => {
+        if (interim) { finalRef.current += ' ' + interim; interim = ''; }
+        if (wantSR.current) { try { const nx = make(); nx.start(); recog.current = nx; } catch {} }
+      };
+      return rec;
+    };
+    try { const r = make(); r.start(); recog.current = r; } catch { setSttErr('start-failed'); }
+  };
+
+  // نهاية التسميع: نوقف التعرف وننتظر التفريغ النهائي ثم نقارن بنص الآية
+  const finish = () => {
+    wantSR.current = false;
+    const my = sess.current;
+    setPhase('review');
+    if (recog.current) {
+      setChecking(true);
+      try { recog.current.stop(); } catch {}
+      setTimeout(() => { if (my !== sess.current) return; setHeard(heardRef.current); setChecking(false); }, 1500);
+    }
+  };
+  const endRecording = () => (recRef.current?.state === 'recording' ? recRef.current.stop() : finish());
+
   const startRec = async () => {
+    if (sttOnly) { // فحص بدون تسجيل صوتي: لتجنّب تعارض الميكروفون
+      recRef.current = null; setUserUrl(null);
+      if (!(window.SpeechRecognition || window.webkitSpeechRecognition)) { setErr('هذا المتصفح لا يدعم التعرف على الكلام.'); setPhase('review'); return; }
+      startSR(); setPhase('record'); return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mr = new MediaRecorder(stream);
@@ -66,29 +132,11 @@ export default function MemorizationEngine({ surah, ayahs, repeats, memorized, o
         stream.getTracks().forEach((t) => t.stop());
         if (cancelled.current) { cancelled.current = false; return; }
         const url = URL.createObjectURL(new Blob(chunks.current, { type: mr.mimeType }));
-        setUserUrl(url); setPhase('review');
+        setUserUrl(url);
         new Audio(url).play().catch(() => {}); // يعيد تشغيل تسجيلك تلقائياً
-        // ننتظر لحظة ليصل التفريغ النهائي ثم نقارنه بنص الآية
-        const my = sess.current;
-        if (recog.current) {
-          setChecking(true);
-          try { recog.current.stop(); } catch {}
-          setTimeout(() => { if (my !== sess.current) return; setHeard(heardRef.current); setChecking(false); }, 1500);
-        }
+        finish();
       };
-      mr.start(); recRef.current = mr; setPhase('record');
-
-      // تفريغ التلاوة إلى نص بالتوازي (Web Speech API)
-      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      heardRef.current = ''; recog.current = null;
-      if (SR) {
-        try {
-          const rec = new SR();
-          rec.lang = 'ar-SA'; rec.continuous = true; rec.interimResults = true;
-          rec.onresult = (e) => { heardRef.current = Array.from(e.results).map((r) => r[0].transcript).join(' '); };
-          rec.start(); recog.current = rec;
-        } catch { recog.current = null; }
-      }
+      mr.start(); recRef.current = mr; startSR(); setPhase('record');
     } catch {
       setErr('تعذّر الوصول إلى الميكروفون. اسمح للمتصفح باستخدامه ثم أعد المحاولة.');
       setPhase('review');
@@ -121,7 +169,9 @@ export default function MemorizationEngine({ surah, ayahs, repeats, memorized, o
             <motion.div key="rec" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-4">
               <motion.div animate={{ scale: [1, 1.25, 1] }} transition={{ repeat: Infinity, duration: 1.4 }} className="text-6xl">🎙️</motion.div>
               <p className="text-lg">النص مخفي — سمِّع الآية من حفظك الآن</p>
-              <button className="btn-gold" onClick={() => recRef.current?.stop()}>⏹ أنهيت التسميع</button>
+              <button className="btn-gold" onClick={endRecording}>⏹ أنهيت التسميع</button>
+              {srOk && <p className="min-h-[1.5rem] text-sm opacity-70">{live ? `أسمعك: ${live}` : 'بانتظار صوتك…'}</p>}
+              {sttErr && <p className="text-sm text-red-500">{sttMsg(sttErr)}</p>}
             </motion.div>
           ) : (
             <motion.p key={ayah.n} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
@@ -140,7 +190,7 @@ export default function MemorizationEngine({ surah, ayahs, repeats, memorized, o
         srOk ? (
           <div className="card space-y-2 p-4 text-sm">
             {checking && <p>⏳ جارٍ فحص تلاوتك…</p>}
-            {!checking && heardNothing && <p>لم أسمع تلاوة واضحة. أعد المحاولة وتحدّث بصوت أعلى وقريباً من الميكروفون.</p>}
+            {!checking && heardNothing && <p className={sttErr ? 'text-red-500' : ''}>{sttErr ? sttMsg(sttErr) : 'لم يصلني نص من تلاوتك. أعد المحاولة بصوت أعلى وقريباً من الميكروفون، أو جرّب «فحص بدون تسجيل صوتي».'}</p>}
             {!checking && result && !heardNothing && (
               <>
                 <p className="font-bold">
@@ -177,6 +227,13 @@ export default function MemorizationEngine({ surah, ayahs, repeats, memorized, o
             </>
           )}
         </div>
+      )}
+
+      {!focus && srOk && (
+        <label className="flex items-center gap-2 text-xs opacity-80">
+          <input type="checkbox" checked={sttOnly} onChange={(e) => setSttOnly(e.target.checked)} />
+          فحص بدون تسجيل صوتي (إن لم يظهر لك النص أثناء التسميع)
+        </label>
       )}
 
       <AudioPlayer floating={focus} src={audioUrl(surah.id, ayah.n, reciter)} playing={playing} setPlaying={setPlaying}
